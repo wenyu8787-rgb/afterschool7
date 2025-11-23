@@ -1,0 +1,979 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>新上國小課後社團報名系統</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Babel for JSX transformation -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- Prevent flash of unstyled content -->
+    <style>
+        body { display: none; }
+        /* Custom scrollbar for modals */
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 6px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: #f1f5f9;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: #94a3b8;
+            border-radius: 3px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+            background: #64748b;
+        }
+        .fade-in {
+            animation: fadeIn 0.3s ease-out forwards;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-900">
+    <div id="root"></div>
+
+    <script type="text/babel" data-type="module">
+        // --- Imports from CDNs ---
+        import React, { useState, useEffect, useMemo, useRef } from 'https://esm.sh/react@18.2.0';
+        import { createRoot } from 'https://esm.sh/react-dom@18.2.0/client';
+        
+        // Lucide Icons
+        import { 
+            User, LogOut, Calendar, Clock, MapPin, DollarSign, Users, Settings, 
+            Plus, Trash2, Edit, Download, Upload, AlertTriangle, FileSpreadsheet, 
+            CheckCircle, Phone, Loader2, Shield, List, XCircle, FileUp, Filter,
+            Info, BookOpen, RefreshCw, UserCog, Lock, Search, School
+        } from 'https://esm.sh/lucide-react@0.292.0';
+
+        // Firebase SDKs
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.13.1/firebase-app.js';
+        import { 
+            getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, 
+            signOut, onAuthStateChanged, updateProfile, updatePassword 
+        } from 'https://www.gstatic.com/firebasejs/10.13.1/firebase-auth.js';
+        import { 
+            getFirestore, collection, doc, getDoc, getDocs, setDoc, addDoc, 
+            updateDoc, deleteDoc, onSnapshot, query, where, serverTimestamp, 
+            writeBatch, increment, limit 
+        } from 'https://www.gstatic.com/firebasejs/10.13.1/firebase-firestore.js';
+
+        // --- Firebase Configuration ---
+        const firebaseConfig = {
+            apiKey: "AIzaSyBJTRVbX6tYLPuUeQ22Na4JLhII6BrHW6o",
+            authDomain: "afterschool-8afcf.firebaseapp.com",
+            projectId: "afterschool-8afcf",
+            storageBucket: "afterschool-8afcf.firebasestorage.app",
+            messagingSenderId: "503971252052",
+            appId: "1:503971252052:web:750301c13a1bd88258eac1",
+            measurementId: "G-ZKY26DX7E9"
+        };
+
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        
+        // Define getAppId globally to fix ReferenceError
+        const getAppId = () => typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+        // --- Helper Functions for CSV ---
+
+        const escapeCSV = (str) => {
+            if (str === null || str === undefined) return '';
+            const stringValue = String(str);
+            if (stringValue.includes('"') || stringValue.includes(',') || stringValue.includes('\n')) {
+                return `"${stringValue.replace(/"/g, '""')}"`;
+            }
+            return stringValue;
+        };
+
+        const parseCSVLine = (text) => {
+            const result = [];
+            let startValueIndex = 0;
+            let inQuotes = false;
+            
+            for (let i = 0; i < text.length; i++) {
+                if (text[i] === '"') {
+                    inQuotes = !inQuotes;
+                } else if (text[i] === ',' && !inQuotes) {
+                    let field = text.substring(startValueIndex, i);
+                    if (field.startsWith('"') && field.endsWith('"')) {
+                        field = field.slice(1, -1).replace(/""/g, '"');
+                    }
+                    result.push(field.trim());
+                    startValueIndex = i + 1;
+                }
+            }
+            let lastField = text.substring(startValueIndex);
+            if (lastField.startsWith('"') && lastField.endsWith('"')) {
+                lastField = lastField.slice(1, -1).replace(/""/g, '"');
+            }
+            result.push(lastField.trim());
+            return result;
+        };
+
+        // --- Components ---
+
+        const Notification = ({ message, type, onClose }) => {
+            if (!message) return null;
+            const bgColor = type === 'error' ? 'bg-red-50 text-red-700 border-red-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200';
+            const icon = type === 'error' ? <AlertTriangle size={18} /> : <CheckCircle size={18} />;
+            
+            return (
+                <div className="fixed top-4 right-4 z-[60] animate-fade-in">
+                    <div className={`px-4 py-3 rounded-xl shadow-lg border flex items-center gap-3 ${bgColor}`}>
+                        {icon}
+                        <span className="font-medium">{message}</span>
+                        <button onClick={onClose} className="ml-4 hover:opacity-75">✕</button>
+                    </div>
+                </div>
+            );
+        };
+
+        // Club Details Modal
+        const ClubDetailsModal = ({ isOpen, onClose, club }) => {
+            if (!isOpen || !club) return null;
+
+            return (
+                <div className="fixed inset-0 bg-slate-900/60 flex items-center justify-center z-50 p-4 backdrop-blur-sm transition-all">
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden fade-in flex flex-col max-h-[90vh]">
+                        <div className="bg-gradient-to-r from-indigo-600 to-violet-600 p-6 text-white flex justify-between items-start">
+                            <div>
+                                <h2 className="text-2xl font-bold mb-2 tracking-tight">{club.name}</h2>
+                                <div className="flex flex-wrap gap-2">
+                                    <span className="bg-white/20 px-3 py-1 rounded-full text-sm backdrop-blur-md flex items-center gap-1.5 border border-white/10">
+                                        <User size={14} /> {club.teacher}
+                                    </span>
+                                    <span className="bg-white/20 px-3 py-1 rounded-full text-sm backdrop-blur-md flex items-center gap-1.5 border border-white/10">
+                                        <MapPin size={14} /> {club.location}
+                                    </span>
+                                </div>
+                            </div>
+                            <button onClick={onClose} className="text-white/70 hover:text-white hover:bg-white/20 rounded-full p-1.5 transition-colors">✕</button>
+                        </div>
+                        
+                        <div className="p-6 overflow-y-auto custom-scrollbar space-y-8">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                                <div className="bg-slate-50 p-5 rounded-xl border border-slate-100 hover:border-indigo-100 transition-colors">
+                                    <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3 flex items-center gap-2"><Clock size={16} className="text-indigo-500"/> 上課時間</h3>
+                                    <p className="text-slate-800 font-semibold text-lg">{club.time}</p>
+                                </div>
+                                <div className="bg-slate-50 p-5 rounded-xl border border-slate-100 hover:border-indigo-100 transition-colors">
+                                    <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3 flex items-center gap-2"><Users size={16} className="text-indigo-500"/> 招收對象</h3>
+                                    <p className="text-slate-800 font-semibold text-lg">{club.grade}</p>
+                                </div>
+                                <div className="bg-slate-50 p-5 rounded-xl border border-slate-100 hover:border-indigo-100 transition-colors">
+                                    <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3 flex items-center gap-2"><DollarSign size={16} className="text-indigo-500"/> 費用說明</h3>
+                                    <div className="flex justify-between items-center mb-2">
+                                        <span className="text-slate-600 font-medium">學費</span>
+                                        <span className="font-bold text-xl text-indigo-600">${club.fee}</span>
+                                    </div>
+                                    <div className="flex justify-between items-center pt-2 border-t border-slate-200">
+                                        <span className="text-slate-600 font-medium">材料費</span>
+                                        <span className="font-bold text-slate-700">${club.materialFee}</span>
+                                    </div>
+                                </div>
+                                <div className="bg-slate-50 p-5 rounded-xl border border-slate-100 hover:border-indigo-100 transition-colors">
+                                    <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3 flex items-center gap-2"><List size={16} className="text-indigo-500"/> 名額限制</h3>
+                                    <div className="flex justify-between items-center mb-2">
+                                        <span className="text-slate-600 font-medium">正取名額</span>
+                                        <span className="font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-md">{club.quota} 人</span>
+                                    </div>
+                                    <div className="flex justify-between items-center pt-2 border-t border-slate-200">
+                                        <span className="text-slate-600 font-medium">備取名額</span>
+                                        <span className="font-bold text-amber-600 bg-amber-50 px-2 py-0.5 rounded-md">{club.reserveQuota} 人</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div>
+                                <h3 className="text-sm font-bold text-slate-500 uppercase mb-3 flex items-center gap-2"><BookOpen size={16} className="text-indigo-500"/> 社團簡介</h3>
+                                <div className="bg-slate-50 p-6 rounded-xl border border-slate-100 text-slate-700 leading-relaxed whitespace-pre-wrap shadow-sm">
+                                    {club.description || "暫無簡介說明。"}
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="p-4 border-t border-slate-100 bg-slate-50 flex justify-end">
+                            <button 
+                                onClick={onClose}
+                                className="bg-white text-slate-700 border border-slate-300 hover:bg-slate-50 px-6 py-2.5 rounded-lg font-bold transition shadow-sm"
+                            >
+                                關閉視窗
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const AuthModal = ({ isOpen, onClose, setUser }) => {
+            const [isRegister, setIsRegister] = useState(false);
+            const [email, setEmail] = useState('');
+            const [password, setPassword] = useState('');
+            const [name, setName] = useState('');
+            const [phone, setPhone] = useState('');
+            const [loading, setLoading] = useState(false);
+            const [error, setError] = useState('');
+            const appId = getAppId();
+
+            if (!isOpen) return null;
+
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                setLoading(true);
+                setError('');
+                try {
+                    let userCredential;
+                    if (isRegister) {
+                        userCredential = await createUserWithEmailAndPassword(auth, email, password);
+                        await updateProfile(userCredential.user, { displayName: name });
+                        
+                        let role = 'user';
+                        if (email === 'admin@demo.com') role = 'admin'; 
+                        else {
+                            try {
+                                const usersRef = collection(db, 'artifacts', appId, 'public', 'data', 'users');
+                                const q = query(usersRef, limit(1));
+                                const snapshot = await getDocs(q);
+                                if (snapshot.empty) role = 'admin';
+                            } catch (checkErr) { console.warn("Admin check skipped:", checkErr); }
+                        }
+
+                        try {
+                            await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', userCredential.user.uid), {
+                                name: name,
+                                phone: phone,
+                                email: email,
+                                role: role,
+                                createdAt: serverTimestamp()
+                            });
+                        } catch (profileErr) { console.warn("Profile creation error:", profileErr); }
+                    } else {
+                        userCredential = await signInWithEmailAndPassword(auth, email, password);
+                    }
+                    onClose();
+                } catch (err) {
+                    console.error(err);
+                    setError(err.message.includes('auth/invalid-credential') ? '帳號或密碼錯誤' : '發生錯誤，請稍後再試');
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            return (
+                <div className="fixed inset-0 bg-slate-900/60 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden fade-in">
+                        <div className="bg-indigo-600 p-6 text-white text-center font-bold text-xl">
+                            {isRegister ? '家長註冊' : '會員登入'}
+                        </div>
+                        <div className="p-8">
+                            {error && <div className="mb-4 p-3 bg-red-50 border border-red-100 text-red-600 text-sm rounded-lg flex items-center gap-2"><AlertTriangle size={16}/>{error}</div>}
+                            <form onSubmit={handleSubmit} className="space-y-5">
+                                {isRegister && (
+                                    <>
+                                        <div>
+                                            <label className="block text-sm font-bold text-slate-700 mb-1.5">家長姓名</label>
+                                            <input type="text" required className="w-full px-4 py-2.5 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition" value={name} onChange={(e) => setName(e.target.value)} placeholder="請輸入家長真實姓名"/>
+                                        </div>
+                                        <div>
+                                            <label className="block text-sm font-bold text-slate-700 mb-1.5">家長聯絡電話</label>
+                                            <input type="tel" required className="w-full px-4 py-2.5 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="例如: 0912345678"/>
+                                        </div>
+                                    </>
+                                )}
+                                <div>
+                                    <label className="block text-sm font-bold text-slate-700 mb-1.5">Email</label>
+                                    <input type="email" required className="w-full px-4 py-2.5 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition" value={email} onChange={(e) => setEmail(e.target.value)} placeholder={isRegister ? "建議使用 admin@demo.com 測試管理員" : ""}/>
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-bold text-slate-700 mb-1.5">密碼</label>
+                                    <input type="password" required className="w-full px-4 py-2.5 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition" value={password} onChange={(e) => setPassword(e.target.value)}/>
+                                </div>
+                                <button type="submit" disabled={loading} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-3 rounded-lg font-bold transition shadow-lg shadow-indigo-200 disabled:opacity-70 flex justify-center items-center gap-2 active:scale-[0.98]">
+                                    {loading ? <Loader2 className="animate-spin" size={20} /> : (isRegister ? '註冊帳號' : '登入系統')}
+                                </button>
+                            </form>
+                            <div className="mt-6 text-center text-sm text-slate-500">
+                                {isRegister ? '已有帳號？' : '還沒有帳號？'}
+                                <button onClick={() => setIsRegister(!isRegister)} className="text-indigo-600 font-bold ml-1 hover:underline">
+                                    {isRegister ? '立即登入' : '立即註冊'}
+                                </button>
+                            </div>
+                            <button onClick={onClose} className="mt-6 w-full text-slate-400 text-sm hover:text-slate-600 transition">取消</button>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const RegistrationModal = ({ isOpen, onClose, club, onConfirm, userProfile }) => {
+            const [studentName, setStudentName] = useState('');
+            const [studentClass, setStudentClass] = useState('');
+            const [parentName, setParentName] = useState('');
+            const [parentPhone, setParentPhone] = useState('');
+
+            useEffect(() => {
+                if (isOpen) {
+                    setStudentName('');
+                    setStudentClass('');
+                    setParentName(userProfile?.name || '');
+                    setParentPhone(userProfile?.phone || '');
+                }
+            }, [isOpen, userProfile]);
+
+            if (!isOpen || !club) return null;
+
+            const handleSubmit = (e) => {
+                e.preventDefault();
+                onConfirm(studentName, studentClass, parentName, parentPhone);
+            };
+
+            return (
+                <div className="fixed inset-0 bg-slate-900/60 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden fade-in">
+                        <div className="bg-indigo-600 p-6 text-white font-bold text-xl flex justify-between items-center">
+                            <span>報名確認</span>
+                            <button onClick={onClose} className="hover:text-indigo-200">✕</button>
+                        </div>
+                        <form onSubmit={handleSubmit} className="p-6 space-y-5">
+                            <div className="bg-indigo-50 p-4 rounded-xl border border-indigo-100">
+                                <div className="text-xs font-bold text-indigo-600 uppercase mb-1">您正在報名</div>
+                                <div className="text-xl text-indigo-900 font-bold mb-1">{club.name}</div>
+                                <div className="text-sm text-indigo-700 flex items-center gap-1"><Clock size={14}/> {club.time}</div>
+                            </div>
+                            
+                            <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label className="block text-sm font-bold text-slate-700 mb-1.5">學生班級 <span className="text-red-500">*</span></label>
+                                    <input type="text" required className="w-full px-3 py-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" value={studentClass} onChange={(e) => setStudentClass(e.target.value)} placeholder="例：301"/>
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-bold text-slate-700 mb-1.5">學生姓名 <span className="text-red-500">*</span></label>
+                                    <input type="text" required className="w-full px-3 py-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" value={studentName} onChange={(e) => setStudentName(e.target.value)} placeholder="學生姓名"/>
+                                </div>
+                            </div>
+                            
+                            <div className="pt-4 border-t border-slate-100">
+                                <h4 className="text-xs font-bold text-slate-500 uppercase mb-3 flex items-center gap-1"><UserCog size={14}/> 家長聯絡資料 (可修改)</h4>
+                                <div className="space-y-4">
+                                    <div>
+                                        <label className="block text-sm font-bold text-slate-700 mb-1.5">家長姓名 <span className="text-red-500">*</span></label>
+                                        <input type="text" required className="w-full px-3 py-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none bg-slate-50 focus:bg-white transition" value={parentName} onChange={(e) => setParentName(e.target.value)} placeholder="家長姓名"/>
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-bold text-slate-700 mb-1.5">聯絡電話 <span className="text-red-500">*</span></label>
+                                        <input type="tel" required className="w-full px-3 py-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none bg-slate-50 focus:bg-white transition" value={parentPhone} onChange={(e) => setParentPhone(e.target.value)} placeholder="請輸入手機或市話"/>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="pt-4 flex gap-3">
+                                <button type="button" onClick={onClose} className="flex-1 bg-white border border-slate-300 text-slate-700 py-2.5 rounded-lg font-bold hover:bg-slate-50 transition">取消</button>
+                                <button type="submit" className="flex-1 bg-indigo-600 text-white py-2.5 rounded-lg font-bold hover:bg-indigo-700 transition shadow-md active:scale-[0.98]">確認報名</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            );
+        };
+
+        const ClubFormModal = ({ isOpen, onClose, editData, onSave }) => {
+            const [formData, setFormData] = useState({ name: '', teacher: '', time: '', location: '', grade: '', fee: '', materialFee: '0', quota: '20', reserveQuota: '5', description: '' });
+            useEffect(() => { if (editData) { setFormData({ name: editData.name || '', teacher: editData.teacher || '', time: editData.time || '', location: editData.location || '', grade: editData.grade || '', fee: editData.fee || '', materialFee: editData.materialFee || '', quota: editData.quota || '', reserveQuota: editData.reserveQuota || '', description: editData.description || '' }); } else { setFormData({ name: '', teacher: '', time: '', location: '', grade: '', fee: '', materialFee: '0', quota: '20', reserveQuota: '5', description: '' }); } }, [editData, isOpen]);
+            if (!isOpen) return null;
+            const handleChange = (e) => { const { name, value } = e.target; setFormData(prev => ({ ...prev, [name]: value })); };
+            const handleSubmit = (e) => { e.preventDefault(); onSave({ ...formData, fee: Number(formData.fee), materialFee: Number(formData.materialFee), quota: Number(formData.quota), reserveQuota: Number(formData.reserveQuota) }); };
+            return (
+                <div className="fixed inset-0 bg-slate-900/60 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto fade-in">
+                        <div className="bg-indigo-600 p-6 text-white font-bold flex justify-between items-center sticky top-0 z-10">
+                            <span className="text-xl">{editData ? '編輯社團' : '新增社團'}</span>
+                            <button onClick={onClose} className="text-white/80 hover:text-white hover:bg-indigo-500 rounded-full p-1 transition">✕</button>
+                        </div>
+                        <form onSubmit={handleSubmit} className="p-6 grid grid-cols-1 md:grid-cols-2 gap-5">
+                            <div className="md:col-span-2"><label className="block text-xs font-bold text-slate-500 uppercase mb-1">社團名稱</label><input name="name" value={formData.name} onChange={handleChange} required className="w-full p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" /></div>
+                            <div><label className="block text-xs font-bold text-slate-500 uppercase mb-1">指導老師</label><input name="teacher" value={formData.teacher} onChange={handleChange} required className="w-full p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" /></div>
+                            <div><label className="block text-xs font-bold text-slate-500 uppercase mb-1">上課地點</label><input name="location" value={formData.location} onChange={handleChange} required className="w-full p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" /></div>
+                            <div><label className="block text-xs font-bold text-slate-500 uppercase mb-1">上課時間</label><input name="time" value={formData.time} onChange={handleChange} required placeholder="例: 週一 16:00-17:30" className="w-full p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" /></div>
+                            <div><label className="block text-xs font-bold text-slate-500 uppercase mb-1">招收年級</label><input name="grade" value={formData.grade} onChange={handleChange} required placeholder="例: 3-6年級" className="w-full p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" /></div>
+                            <div><label className="block text-xs font-bold text-slate-500 uppercase mb-1">學費 ($)</label><input type="number" name="fee" value={formData.fee} onChange={handleChange} required className="w-full p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" /></div>
+                            <div><label className="block text-xs font-bold text-slate-500 uppercase mb-1">材料費 ($)</label><input type="number" name="materialFee" value={formData.materialFee} onChange={handleChange} required className="w-full p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" /></div>
+                            <div><label className="block text-xs font-bold text-slate-500 uppercase mb-1">正取名額</label><input type="number" name="quota" value={formData.quota} onChange={handleChange} required className="w-full p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" /></div>
+                            <div><label className="block text-xs font-bold text-slate-500 uppercase mb-1">備取名額</label><input type="number" name="reserveQuota" value={formData.reserveQuota} onChange={handleChange} required className="w-full p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" /></div>
+                            <div className="md:col-span-2"><label className="block text-xs font-bold text-slate-500 uppercase mb-1">社團簡介/備註</label><textarea name="description" value={formData.description} onChange={handleChange} rows="4" className="w-full p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"></textarea></div>
+                            <div className="md:col-span-2 flex justify-end gap-3 mt-4">
+                                <button type="button" onClick={onClose} className="px-6 py-2.5 bg-white border border-slate-300 text-slate-700 hover:bg-slate-50 rounded-lg font-bold transition">取消</button>
+                                <button type="submit" className="px-6 py-2.5 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-bold shadow-md transition active:scale-[0.98]">儲存設定</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            );
+        };
+
+        const ProfileModal = ({ isOpen, onClose, user, userProfile, onUpdate }) => {
+            const [name, setName] = useState('');
+            const [phone, setPhone] = useState('');
+            const [newPassword, setNewPassword] = useState('');
+            const [loading, setLoading] = useState(false);
+            useEffect(() => { if (isOpen && userProfile) { setName(userProfile.name || user?.displayName || ''); setPhone(userProfile.phone || ''); setNewPassword(''); } }, [isOpen, userProfile, user]);
+            if (!isOpen) return null;
+            const handleSubmit = async (e) => { e.preventDefault(); setLoading(true); try { await onUpdate(name, phone, newPassword); onClose(); } catch (error) {} finally { setLoading(false); } };
+            return (
+                <div className="fixed inset-0 bg-slate-900/60 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden fade-in">
+                        <div className="bg-indigo-600 p-6 text-white font-bold text-xl flex justify-between items-center"><span className="flex items-center gap-2"><UserCog size={24}/> 修改個人資料</span><button onClick={onClose} className="hover:text-indigo-200">✕</button></div>
+                        <form onSubmit={handleSubmit} className="p-6 space-y-5">
+                            <div><label className="block text-sm font-bold text-slate-700 mb-1.5">姓名</label><input type="text" required className="w-full p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" value={name} onChange={(e) => setName(e.target.value)} /></div>
+                            <div><label className="block text-sm font-bold text-slate-700 mb-1.5">聯絡電話</label><input type="tel" required className="w-full p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" value={phone} onChange={(e) => setPhone(e.target.value)} /></div>
+                            <div className="pt-4 border-t border-slate-100"><label className="block text-sm font-bold text-slate-700 mb-1.5 flex items-center gap-1"><Lock size={16}/> 變更密碼 (若不修改請留白)</label><input type="password" className="w-full p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="至少6碼" minLength="6" /><p className="text-xs text-slate-500 mt-1">注意：修改密碼可能需要您重新登入。</p></div>
+                            <div className="pt-4 flex gap-3"><button type="button" onClick={onClose} className="flex-1 bg-white border border-slate-300 text-slate-700 py-2.5 rounded-lg font-bold hover:bg-slate-50">取消</button><button type="submit" disabled={loading} className="flex-1 bg-indigo-600 text-white py-2.5 rounded-lg font-bold hover:bg-indigo-700 disabled:opacity-70 shadow-md active:scale-[0.98]">{loading ? '儲存中...' : '儲存變更'}</button></div>
+                        </form>
+                    </div>
+                </div>
+            );
+        };
+
+        const MemberManagementModal = ({ isOpen, onClose, onEditUser, onDeleteUser }) => {
+            const [members, setMembers] = useState([]);
+            const [searchTerm, setSearchTerm] = useState('');
+            const [loading, setLoading] = useState(true);
+            const [editingMember, setEditingMember] = useState(null);
+            const appId = getAppId();
+            useEffect(() => { if (isOpen) { const fetchMembers = async () => { setLoading(true); try { const usersRef = collection(db, 'artifacts', appId, 'public', 'data', 'users'); const snapshot = await getDocs(usersRef); setMembers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }))); } catch (err) { console.error(err); } finally { setLoading(false); } }; fetchMembers(); } else { setEditingMember(null); } }, [isOpen]);
+            const filteredMembers = members.filter(m => (m.name?.toLowerCase() || '').includes(searchTerm.toLowerCase()) || (m.email?.toLowerCase() || '').includes(searchTerm.toLowerCase()) || (m.phone?.toLowerCase() || '').includes(searchTerm.toLowerCase()));
+            const handleSaveEdit = async (e) => { e.preventDefault(); if (!editingMember) return; await onEditUser(editingMember.id, { name: editingMember.name, phone: editingMember.phone, role: editingMember.role }); setMembers(prev => prev.map(m => m.id === editingMember.id ? editingMember : m)); setEditingMember(null); };
+            if (!isOpen) return null;
+            return (
+                <div className="fixed inset-0 bg-slate-900/60 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl overflow-hidden flex flex-col max-h-[90vh] fade-in">
+                        <div className="bg-slate-800 p-6 text-white font-bold text-xl flex justify-between items-center"><span className="flex items-center gap-2"><Users size={24}/> 會員管理</span><button onClick={onClose} className="hover:text-slate-300">✕</button></div>
+                        <div className="p-4 border-b border-slate-100 bg-slate-50 flex justify-between items-center gap-4">
+                            <div className="relative flex-1"><Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} /><input type="text" placeholder="搜尋姓名、Email 或電話..." className="w-full pl-10 pr-4 py-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)}/></div><div className="text-sm text-slate-500 font-medium">共 {filteredMembers.length} 位會員</div>
+                        </div>
+                        <div className="overflow-y-auto flex-1 p-4 custom-scrollbar">
+                            {editingMember ? (
+                                <form onSubmit={handleSaveEdit} className="space-y-5 max-w-md mx-auto bg-white p-8 rounded-2xl border border-slate-100 shadow-sm">
+                                    <h3 className="font-bold text-xl text-center text-slate-800 mb-6">編輯會員資料</h3>
+                                    <div><label className="block text-sm font-bold text-slate-700 mb-1.5">姓名</label><input type="text" required className="w-full p-2.5 border border-slate-300 rounded-lg" value={editingMember.name} onChange={e => setEditingMember({...editingMember, name: e.target.value})} /></div>
+                                    <div><label className="block text-sm font-bold text-slate-700 mb-1.5">電話</label><input type="text" required className="w-full p-2.5 border border-slate-300 rounded-lg" value={editingMember.phone} onChange={e => setEditingMember({...editingMember, phone: e.target.value})} /></div>
+                                    <div><label className="block text-sm font-bold text-slate-700 mb-1.5">權限角色</label><select className="w-full p-2.5 border border-slate-300 rounded-lg bg-white" value={editingMember.role} onChange={e => setEditingMember({...editingMember, role: e.target.value})}><option value="user">一般會員 (user)</option><option value="admin">管理員 (admin)</option></select></div>
+                                    <div className="flex gap-3 pt-4"><button type="button" onClick={() => setEditingMember(null)} className="flex-1 bg-slate-100 text-slate-700 py-2.5 rounded-lg hover:bg-slate-200 font-bold">取消</button><button type="submit" className="flex-1 bg-indigo-600 text-white py-2.5 rounded-lg hover:bg-indigo-700 font-bold shadow-md">儲存</button></div>
+                                </form>
+                            ) : (
+                                <div className="rounded-xl border border-slate-200 overflow-hidden">
+                                    <table className="w-full text-left">
+                                        <thead className="bg-slate-50 text-slate-600 uppercase text-xs font-bold"><tr><th className="px-6 py-3">姓名</th><th className="px-6 py-3">Email</th><th className="px-6 py-3">電話</th><th className="px-6 py-3">角色</th><th className="px-6 py-3 text-right">操作</th></tr></thead>
+                                        <tbody className="divide-y divide-slate-100 bg-white">
+                                            {filteredMembers.map(m => (
+                                                <tr key={m.id} className="hover:bg-slate-50 transition-colors">
+                                                    <td className="px-6 py-4 font-bold text-slate-800">{m.name}</td><td className="px-6 py-4 text-slate-600">{m.email}</td><td className="px-6 py-4 text-slate-600">{m.phone}</td>
+                                                    <td className="px-6 py-4"><span className={`px-2.5 py-1 rounded-full text-xs font-bold ${m.role === 'admin' ? 'bg-purple-100 text-purple-700' : 'bg-slate-100 text-slate-700'}`}>{m.role}</span></td>
+                                                    <td className="px-6 py-4 text-right flex justify-end gap-2">
+                                                        <button onClick={() => setEditingMember(m)} className="p-2 text-indigo-600 hover:bg-indigo-50 rounded-lg transition" title="編輯"><Edit size={18}/></button>
+                                                        <button onClick={async () => { if(confirm(`確定要刪除會員 ${m.name} 嗎？這將無法復原。`)) { await onDeleteUser(m.id); setMembers(prev => prev.filter(x => x.id !== m.id)); } }} className="p-2 text-rose-600 hover:bg-rose-50 rounded-lg transition" title="刪除"><Trash2 size={18}/></button>
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // --- Main Application ---
+        function App() {
+            const [user, setUser] = useState(null);
+            const [userProfile, setUserProfile] = useState(null); 
+            const [authModalOpen, setAuthModalOpen] = useState(false);
+            const [notification, setNotification] = useState(null);
+            const [clubs, setClubs] = useState([]);
+            const [settings, setSettings] = useState({ start: '', end: '', manualOpen: null });
+            const [registrations, setRegistrations] = useState([]);
+            const [userRegistrations, setUserRegistrations] = useState([]);
+            const [currentTime, setCurrentTime] = useState(new Date().getTime()); 
+
+            const [registeringClub, setRegisteringClub] = useState(null);
+            const [viewingClub, setViewingClub] = useState(null); 
+            
+            const [profileModalOpen, setProfileModalOpen] = useState(false);
+            const [memberMgmtOpen, setMemberMgmtOpen] = useState(false);
+
+            const [isAdmin, setIsAdmin] = useState(false);
+            const [clubModalOpen, setClubModalOpen] = useState(false);
+            const [editingClub, setEditingClub] = useState(null);
+            const [adminRegFilter, setAdminRegFilter] = useState('all'); 
+
+            const clubFileInputRef = useRef(null);
+
+            const appId = getAppId();
+
+            // --- Effects ---
+            useEffect(() => { const timer = setInterval(() => { setCurrentTime(new Date().getTime()); }, 1000); return () => clearInterval(timer); }, []);
+            useEffect(() => { let unsubUser = null; const unsubscribeAuth = onAuthStateChanged(auth, (currentUser) => { setUser(currentUser); if (unsubUser) { unsubUser(); unsubUser = null; } if (currentUser) { const userDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'users', currentUser.uid); unsubUser = onSnapshot(userDocRef, (docSnap) => { let profileData = { name: currentUser.displayName || '家長', phone: '', role: 'user' }; if (docSnap.exists()) { profileData = { ...profileData, ...docSnap.data() }; } if (currentUser.email === 'admin@demo.com') { profileData.role = 'admin'; setIsAdmin(true); } else { setIsAdmin(profileData.role === 'admin'); } setUserProfile(profileData); }, (error) => { console.warn("Profile stream error:", error); setUserProfile({ name: currentUser.displayName || '家長', phone: '', role: 'user' }); }); } else { setIsAdmin(false); setUserProfile(null); } }); return () => { unsubscribeAuth(); if (unsubUser) unsubUser(); }; }, []);
+            useEffect(() => { const clubsRef = collection(db, 'artifacts', appId, 'public', 'data', 'clubs'); const unsubClubs = onSnapshot(clubsRef, (snapshot) => { const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })); list.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant')); setClubs(list); }, (err) => console.error("Clubs stream error:", err)); const settingsRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'config'); const unsubSettings = onSnapshot(settingsRef, (docSnap) => { if (docSnap.exists()) { setSettings(docSnap.data()); } }); const regsRef = collection(db, 'artifacts', appId, 'public', 'data', 'registrations'); const unsubRegs = onSnapshot(regsRef, (snapshot) => { const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })); setRegistrations(list); }, (err) => console.error("Registrations stream error:", err)); return () => { unsubClubs(); unsubSettings(); unsubRegs(); }; }, []);
+            
+            // FIX: Sort userRegistrations by timestamp
+            useEffect(() => {
+                if (user && registrations.length > 0) {
+                    const myRegs = registrations.filter(r => r.userId === user.uid);
+                    myRegs.sort((a, b) => (a.timestamp?.seconds || 0) - (b.timestamp?.seconds || 0));
+                    setUserRegistrations(myRegs);
+                } else {
+                    setUserRegistrations([]);
+                }
+            }, [user, registrations]);
+
+            // --- Logic ---
+            const isRegistrationOpen = useMemo(() => { if (settings.manualOpen === true) return true; if (settings.manualOpen === false) return false; if (!settings.start || !settings.end) return false; const now = currentTime; const start = new Date(settings.start).getTime(); const end = new Date(settings.end).getTime(); return now >= start && now <= end; }, [settings, currentTime]);
+            const getClubStats = (clubId) => { const clubRegs = registrations.filter(r => r.clubId === clubId); const mainCount = clubRegs.filter(r => r.status === 'main').length; const reserveCount = clubRegs.filter(r => r.status === 'reserve').length; return { mainCount, reserveCount, clubRegs }; };
+            
+            // Updated helper for status display (with order number)
+            const getStatusLabel = (reg) => {
+                if (!reg || !reg.clubId || !reg.status) return '未知';
+                // Filter for same club and same status, then sort chronologically
+                const sameStatusRegs = registrations
+                    .filter(r => r.clubId === reg.clubId && r.status === reg.status)
+                    .sort((a, b) => (a.timestamp?.seconds || 0) - (b.timestamp?.seconds || 0));
+                
+                const index = sameStatusRegs.findIndex(r => r.id === reg.id);
+                const count = index !== -1 ? index + 1 : '?';
+                
+                if (reg.status === 'main') return `正取 (${count})`;
+                if (reg.status === 'reserve') return `備取 (${count})`;
+                return '未知';
+            };
+
+            const showNotification = (msg, type = 'success') => { setNotification({ message: msg, type }); setTimeout(() => setNotification(null), 3000); };
+            
+            const handleSaveClub = async (clubData) => { try { const clubsRef = collection(db, 'artifacts', appId, 'public', 'data', 'clubs'); if (editingClub) { await updateDoc(doc(clubsRef, editingClub.id), clubData); showNotification('社團資料已更新'); } else { await addDoc(clubsRef, { ...clubData, createdAt: serverTimestamp() }); showNotification('新增社團成功'); } setClubModalOpen(false); setEditingClub(null); } catch (e) { showNotification('儲存失敗: ' + e.message, 'error'); } };
+            const handleDeleteClub = async (id) => { if (!confirm('確定要刪除此社團嗎？')) return; try { await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'clubs', id)); showNotification('社團已刪除'); } catch (e) { showNotification('刪除失敗', 'error'); } };
+            const handleUpdateSettings = async (newSettings) => { try { const settingsRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'config'); await setDoc(settingsRef, newSettings, { merge: true }); showNotification('系統設定已更新'); } catch (e) { showNotification('設定更新失敗', 'error'); } };
+            
+            const handleRegisterClick = (club) => { if (!user) { setAuthModalOpen(true); return; } const { mainCount, reserveCount } = getClubStats(club.id); if (mainCount >= club.quota && reserveCount >= club.reserveQuota) { showNotification('名額已滿', 'error'); return; } setRegisteringClub(club); };
+            const confirmRegistration = async (studentName, studentClass, parentName, parentPhone) => { if (!user || !registeringClub) return; const { mainCount, reserveCount } = getClubStats(registeringClub.id); let status = 'main'; if (mainCount >= registeringClub.quota) { if (reserveCount >= registeringClub.reserveQuota) { showNotification('抱歉，就在剛剛名額已滿', 'error'); setRegisteringClub(null); return; } status = 'reserve'; } try { const regRef = collection(db, 'artifacts', appId, 'public', 'data', 'registrations'); await addDoc(regRef, { userId: user.uid, userEmail: user.email, parentName: parentName || userProfile?.name || '家長', parentPhone: parentPhone || userProfile?.phone || '', studentName: studentName, studentClass: studentClass, clubId: registeringClub.id, clubName: registeringClub.name, status: status, timestamp: serverTimestamp() }); showNotification(`報名成功！${studentName} 為 ${status === 'main' ? '正取' : '備取'}`); setRegisteringClub(null); } catch (e) { showNotification('報名失敗: ' + e.message, 'error'); } };
+            const handleCancelRegistration = async (regId) => { if (!confirm('確定要取消此筆報名嗎？')) return; try { await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'registrations', regId)); showNotification('已取消報名'); } catch (e) { showNotification('取消失敗', 'error'); } };
+            const clearAllData = async (collectionName) => { if (!confirm('確定要清空資料嗎？請輸入 "DELETE" 確認。')) return; const userInput = prompt('請輸入 "DELETE" 確認刪除'); if (userInput !== 'DELETE') return; try { const batch = writeBatch(db); const snapshot = collectionName === 'clubs' ? await getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'clubs')) : await getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'registrations')); snapshot.docs.forEach((doc) => { batch.delete(doc.ref); }); await batch.commit(); showNotification('資料已全部清空'); } catch (e) { showNotification('清空失敗', 'error'); } };
+            
+            const exportCSV = (type) => { let csvContent = "data:text/csv;charset=utf-8,\uFEFF"; if (type === 'clubs') { csvContent += "社團名稱,老師,時間,地點,年級,費用,材料費,正取數,備取數,簡介\n"; clubs.forEach(c => { csvContent += `${escapeCSV(c.name)},${escapeCSV(c.teacher)},${escapeCSV(c.time)},${escapeCSV(c.location)},${escapeCSV(c.grade)},${c.fee},${c.materialFee},${c.quota},${c.reserveQuota},${escapeCSV(c.description)}\n`; }); } else { csvContent += "社團名稱,學生班級,學生姓名,家長姓名,聯絡電話,狀態,報名時間\n"; const sortedRegs = [...registrations].sort((a, b) => (a.timestamp?.seconds || 0) - (b.timestamp?.seconds || 0)); sortedRegs.forEach(r => { const time = r.timestamp ? new Date(r.timestamp.seconds * 1000).toLocaleString() : ''; csvContent += `${escapeCSV(r.clubName)},${escapeCSV(r.studentClass || '')},${escapeCSV(r.studentName || '')},${escapeCSV(r.parentName || r.userName)},${escapeCSV(r.parentPhone || r.userPhone || '')},${escapeCSV(getStatusLabel(r))},${escapeCSV(time)}\n`; }); } const encodedUri = encodeURI(csvContent); const link = document.createElement("a"); link.setAttribute("href", encodedUri); link.setAttribute("download", `${type}_export.csv`); document.body.appendChild(link); link.click(); document.body.removeChild(link); };
+            const handleFileUpload = async (event, type) => { const file = event.target.files[0]; if (!file) return; const reader = new FileReader(); reader.onload = async (e) => { const text = e.target.result; const rows = text.split(/\r?\n/).slice(1); const batch = writeBatch(db); let count = 0; try { if (type === 'clubs') { const collectionRef = collection(db, 'artifacts', appId, 'public', 'data', 'clubs'); rows.forEach(row => { if (!row.trim()) return; const cols = parseCSVLine(row); if (cols.length >= 8) { const newDoc = doc(collectionRef); batch.set(newDoc, { name: cols[0] || '', teacher: cols[1] || '', time: cols[2] || '', location: cols[3] || '', grade: cols[4] || '', fee: Number(cols[5]) || 0, materialFee: Number(cols[6]) || 0, quota: Number(cols[7]) || 0, reserveQuota: Number(cols[8]) || 0, description: cols[9] || '', createdAt: serverTimestamp() }); count++; } }); } await batch.commit(); showNotification(`成功匯入 ${count} 筆資料`); } catch (err) { console.error(err); showNotification('匯入失敗：格式錯誤或網路問題', 'error'); } event.target.value = ''; }; reader.readAsText(file); };
+            const handleProfileUpdate = async (name, phone, newPassword) => { try { if (!user) return; await updateProfile(user, { displayName: name }); const userDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'users', user.uid); await setDoc(userDocRef, { name, phone }, { merge: true }); if (newPassword) { await updatePassword(user, newPassword); showNotification("資料與密碼已更新成功！"); } else { showNotification("個人資料更新成功！"); } } catch (err) { console.error("Update profile error:", err); if (err.code === 'auth/requires-recent-login') { showNotification("修改密碼需要您重新登入後再次操作", 'error'); } else { showNotification("更新失敗，請稍後再試", 'error'); } throw err; } };
+            const handleAdminUpdateUser = async (userId, data) => { try { const userDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'users', userId); await setDoc(userDocRef, data, { merge: true }); showNotification("會員資料已更新"); } catch (err) { console.error("Update user error:", err); showNotification("更新失敗", 'error'); } };
+            const handleAdminDeleteUser = async (userId) => { try { const userDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'users', userId); await deleteDoc(userDocRef); showNotification("會員資料已刪除 (帳號仍存在)"); } catch (err) { console.error("Delete user error:", err); showNotification("刪除失敗", 'error'); } };
+            
+            const filteredAdminRegs = useMemo(() => { let regs = adminRegFilter === 'all' ? registrations : registrations.filter(r => r.clubId === adminRegFilter); return [...regs].sort((a, b) => (a.timestamp?.seconds || 0) - (b.timestamp?.seconds || 0)); }, [registrations, adminRegFilter]);
+            const formattedTime = new Date(currentTime).toLocaleTimeString('zh-TW', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            const handleManualRefresh = () => { showNotification('資料已是最新狀態'); };
+
+            return (
+                <div className="min-h-screen bg-slate-50 font-sans text-slate-800">
+                    {notification && <Notification message={notification.message} type={notification.type} onClose={() => setNotification(null)} />}
+                    
+                    <AuthModal isOpen={authModalOpen} onClose={() => setAuthModalOpen(false)} setUser={setUser} />
+                    
+                    <RegistrationModal 
+                        isOpen={!!registeringClub} 
+                        onClose={() => setRegisteringClub(null)} 
+                        club={registeringClub}
+                        onConfirm={confirmRegistration}
+                        userProfile={userProfile}
+                    />
+                    
+                    <ClubDetailsModal 
+                        isOpen={!!viewingClub} 
+                        onClose={() => setViewingClub(null)} 
+                        club={viewingClub} 
+                    />
+                    
+                    <ClubFormModal 
+                        isOpen={clubModalOpen} 
+                        onClose={() => { setClubModalOpen(false); setEditingClub(null); }} 
+                        editData={editingClub}
+                        onSave={handleSaveClub}
+                    />
+                    
+                    {/* New Modals */}
+                    <ProfileModal 
+                        isOpen={profileModalOpen}
+                        onClose={() => setProfileModalOpen(false)}
+                        user={user}
+                        userProfile={userProfile}
+                        onUpdate={handleProfileUpdate}
+                    />
+
+                    <MemberManagementModal 
+                        isOpen={memberMgmtOpen}
+                        onClose={() => setMemberMgmtOpen(false)}
+                        onEditUser={handleAdminUpdateUser}
+                        onDeleteUser={handleAdminDeleteUser}
+                    />
+
+                    <header className="bg-white/90 backdrop-blur-md shadow-sm border-b border-slate-200 sticky top-0 z-40 transition-all">
+                        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                                <div className="bg-gradient-to-br from-indigo-500 to-violet-600 p-2.5 rounded-xl shadow-md shadow-indigo-200">
+                                    <School className="text-white w-6 h-6" />
+                                </div>
+                                <h1 className="text-2xl font-extrabold bg-clip-text text-transparent bg-gradient-to-r from-indigo-600 to-violet-600 tracking-tight hidden sm:block">新上國小課後社團</h1>
+                                <h1 className="text-xl font-bold text-slate-800 sm:hidden">社團報名</h1>
+                            </div>
+
+                            <div className="flex items-center gap-4">
+                                {user ? (
+                                    <div className="flex items-center gap-4">
+                                        <div className="text-right hidden md:block cursor-pointer group" onClick={() => setProfileModalOpen(true)}>
+                                            <div className="text-sm font-bold text-slate-700 flex items-center justify-end gap-1 group-hover:text-indigo-600 transition">
+                                                {userProfile?.name || user.displayName || '家長'} <Edit size={14} className="text-slate-400 group-hover:text-indigo-400"/>
+                                            </div>
+                                            <div className="text-xs text-slate-500 flex items-center justify-end gap-1">
+                                                {isAdmin && <Shield size={12} className="text-amber-500" />}
+                                                {isAdmin ? '管理員' : (userProfile?.phone || '會員')}
+                                            </div>
+                                        </div>
+                                        <button onClick={() => signOut(auth)} className="bg-white border border-slate-200 hover:bg-red-50 hover:text-red-600 hover:border-red-200 text-slate-600 px-4 py-2 rounded-xl text-sm font-bold transition shadow-sm flex items-center gap-2">
+                                            <LogOut size={16} /> <span className="hidden sm:inline">登出</span>
+                                        </button>
+                                    </div>
+                                ) : (
+                                    <button onClick={() => setAuthModalOpen(true)} className="bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 text-white px-6 py-2.5 rounded-xl text-sm font-bold transition shadow-lg shadow-indigo-200 flex items-center gap-2 active:scale-[0.98]">
+                                        <User size={18} /> 登入 / 註冊
+                                    </button>
+                                )}
+                            </div>
+                        </div>
+                    </header>
+
+                    <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 space-y-10">
+                        {isAdmin && (
+                            <>
+                                <section className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden hover:shadow-md transition-shadow">
+                                    <div className="bg-slate-800 px-6 py-4 flex justify-between items-center">
+                                        <h2 className="text-lg font-bold flex items-center gap-2 text-white"><Settings size={20} className="text-indigo-400" /> 管理員設定</h2>
+                                        <span className="text-xs bg-slate-700 text-indigo-200 px-2.5 py-1 rounded-full border border-slate-600">Admin Mode</span>
+                                    </div>
+                                    <div className="p-8 space-y-8">
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                                            <div className="space-y-2">
+                                                <label className="block text-sm font-bold text-slate-600">報名開始時間</label>
+                                                <input type="datetime-local" value={settings.start || ''} onChange={(e) => setSettings(s => ({...s, start: e.target.value}))} className="w-full border border-slate-300 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none bg-slate-50 focus:bg-white transition"/>
+                                            </div>
+                                            <div className="space-y-2">
+                                                <label className="block text-sm font-bold text-slate-600">報名結束時間</label>
+                                                <div className="flex gap-3">
+                                                    <input type="datetime-local" value={settings.end || ''} onChange={(e) => setSettings(s => ({...s, end: e.target.value}))} className="w-full border border-slate-300 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none bg-slate-50 focus:bg-white transition"/>
+                                                    <button onClick={() => handleUpdateSettings({ ...settings, manualOpen: null })} className="bg-indigo-600 text-white px-5 rounded-xl font-bold hover:bg-indigo-700 shadow-md active:scale-[0.98] whitespace-nowrap">儲存排程</button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div className="flex flex-wrap gap-4 pt-6 border-t border-slate-100">
+                                            <button onClick={() => handleUpdateSettings({ ...settings, manualOpen: true })} className="bg-emerald-50 text-emerald-700 border border-emerald-200 px-5 py-2.5 rounded-xl font-bold hover:bg-emerald-100 flex items-center gap-2 transition"><CheckCircle size={18} /> 立即開放</button>
+                                            <button onClick={() => handleUpdateSettings({ ...settings, manualOpen: false })} className="bg-slate-100 text-slate-700 border border-slate-200 px-5 py-2.5 rounded-xl font-bold hover:bg-slate-200 flex items-center gap-2 transition"><AlertTriangle size={18} /> 立即關閉</button>
+                                            
+                                            <button onClick={() => setMemberMgmtOpen(true)} className="bg-violet-50 text-violet-700 border border-violet-200 px-5 py-2.5 rounded-xl font-bold hover:bg-violet-100 flex items-center gap-2 transition"><Users size={18} /> 會員管理</button>
+                                            
+                                            <div className="flex-grow"></div>
+                                            <button onClick={() => setClubModalOpen(true)} className="bg-indigo-600 text-white px-6 py-2.5 rounded-xl font-bold hover:bg-indigo-700 flex items-center gap-2 shadow-lg shadow-indigo-200 active:scale-[0.98] transition"><Plus size={18} /> 新增社團</button>
+                                        </div>
+                                        <div className="bg-slate-50 p-6 rounded-2xl border border-slate-200 grid grid-cols-1 md:grid-cols-2 gap-6">
+                                            <div className="space-y-3">
+                                                <h3 className="font-bold text-slate-700 flex items-center gap-2"><FileSpreadsheet size={18}/> 社團資料管理</h3>
+                                                <div className="flex gap-2 flex-wrap">
+                                                    <button onClick={() => exportCSV('clubs')} className="bg-white border border-slate-300 text-slate-700 px-4 py-2 rounded-lg text-sm hover:bg-slate-50 hover:border-slate-400 flex items-center gap-1.5 transition"><Download size={14}/> 匯出社團</button>
+                                                    <input type="file" accept=".csv" ref={clubFileInputRef} onChange={(e) => handleFileUpload(e, 'clubs')} className="hidden" />
+                                                    <button onClick={() => clubFileInputRef.current.click()} className="bg-white border border-purple-300 text-purple-700 px-4 py-2 rounded-lg text-sm hover:bg-purple-50 hover:border-purple-400 flex items-center gap-1.5 transition"><FileUp size={14}/> 匯入社團</button>
+                                                    <button onClick={() => clearAllData('clubs')} className="bg-white border border-red-200 text-red-600 px-4 py-2 rounded-lg text-sm hover:bg-red-50 hover:border-red-300 flex items-center gap-1.5 transition ml-auto"><Trash2 size={14}/> 清空</button>
+                                                </div>
+                                            </div>
+                                            <div className="space-y-3">
+                                                <h3 className="font-bold text-slate-700 flex items-center gap-2"><Users size={18}/> 報名資料管理</h3>
+                                                <div className="flex gap-2 flex-wrap">
+                                                    <button onClick={() => exportCSV('regs')} className="bg-white border border-slate-300 text-slate-700 px-4 py-2 rounded-lg text-sm hover:bg-slate-50 hover:border-slate-400 flex items-center gap-1.5 transition"><Download size={14}/> 匯出報名</button>
+                                                    <button onClick={() => clearAllData('regs')} className="bg-white border border-red-200 text-red-600 px-4 py-2 rounded-lg text-sm hover:bg-red-50 hover:border-red-300 flex items-center gap-1.5 transition ml-auto"><Trash2 size={14}/> 清空</button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </section>
+
+                                <section className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden hover:shadow-md transition-shadow">
+                                    <div className="px-8 py-5 border-b border-slate-100 bg-slate-50 flex flex-col sm:flex-row justify-between items-center gap-4">
+                                        <div className="flex items-center gap-4">
+                                            <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+                                                <List size={22} className="text-indigo-500" /> 報名情形總覽
+                                            </h2>
+                                            <span className="text-sm text-slate-500 bg-white border border-slate-200 px-3 py-1 rounded-full shadow-sm">
+                                                {formattedTime} 更新 • 共 {filteredAdminRegs.length} 筆
+                                            </span>
+                                            <button onClick={handleManualRefresh} className="text-slate-400 hover:text-indigo-600 transition p-1 rounded-full hover:bg-indigo-50" title="重新整理">
+                                                <RefreshCw size={18} />
+                                            </button>
+                                        </div>
+                                        <div className="flex items-center gap-2 w-full sm:w-auto bg-white p-1 rounded-lg border border-slate-200 shadow-sm">
+                                            <Filter size={16} className="text-slate-400 ml-2" />
+                                            <select 
+                                                value={adminRegFilter} 
+                                                onChange={(e) => setAdminRegFilter(e.target.value)}
+                                                className="border-none text-sm focus:ring-0 outline-none flex-grow sm:w-64 bg-transparent text-slate-700 font-medium"
+                                            >
+                                                <option value="all">全部社團 ({registrations.length}筆)</option>
+                                                {clubs.map(c => (
+                                                <option key={c.id} value={c.id}>
+                                                    {c.name} ({getClubStats(c.id).mainCount + getClubStats(c.id).reserveCount}人)
+                                                </option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div className="overflow-x-auto max-h-[500px] overflow-y-auto custom-scrollbar">
+                                        <table className="w-full text-left border-collapse">
+                                            <thead className="bg-slate-50 text-slate-500 uppercase text-xs font-bold sticky top-0 z-10 shadow-sm">
+                                                <tr>
+                                                    <th className="px-6 py-4 tracking-wider">社團名稱</th>
+                                                    <th className="px-6 py-4 tracking-wider">學生班級</th>
+                                                    <th className="px-6 py-4 tracking-wider">學生姓名</th>
+                                                    <th className="px-6 py-4 tracking-wider">家長姓名</th>
+                                                    <th className="px-6 py-4 tracking-wider">電話</th>
+                                                    <th className="px-6 py-4 tracking-wider">狀態</th>
+                                                    <th className="px-6 py-4 text-right tracking-wider">操作</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-slate-100 bg-white">
+                                                {filteredAdminRegs.length === 0 ? (
+                                                    <tr><td colSpan="7" className="px-6 py-12 text-center text-slate-400">無符合條件的報名資料</td></tr>
+                                                ) : (
+                                                    filteredAdminRegs.map(reg => (
+                                                        <tr key={reg.id} className="hover:bg-slate-50 transition-colors group">
+                                                            <td className="px-6 py-4 font-bold text-slate-800">{reg.clubName}</td>
+                                                            <td className="px-6 py-4 text-slate-600">{reg.studentClass}</td>
+                                                            <td className="px-6 py-4 text-slate-600 font-medium">{reg.studentName}</td>
+                                                            <td className="px-6 py-4 text-sm text-slate-500">{reg.parentName}</td>
+                                                            <td className="px-6 py-4 text-sm text-slate-500">{reg.parentPhone}</td>
+                                                            <td className="px-6 py-4">
+                                                                <span className={`px-2.5 py-1 rounded-full text-xs font-bold border ${
+                                                                    reg.status === 'main' 
+                                                                    ? 'bg-emerald-50 text-emerald-700 border-emerald-100' 
+                                                                    : 'bg-amber-50 text-amber-700 border-amber-100'
+                                                                }`}>
+                                                                    {getStatusLabel(reg)}
+                                                                </span>
+                                                            </td>
+                                                            <td className="px-6 py-4 text-right">
+                                                                <button 
+                                                                    onClick={() => handleCancelRegistration(reg.id)}
+                                                                    className="text-slate-300 hover:text-rose-600 hover:bg-rose-50 p-2 rounded-lg transition" 
+                                                                    title="刪除報名"
+                                                                >
+                                                                    <Trash2 size={18} />
+                                                                </button>
+                                                            </td>
+                                                        </tr>
+                                                    ))
+                                                )}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </section>
+                            </>
+                        )}
+
+                        <div className={`p-5 rounded-2xl border shadow-sm flex items-center justify-between transition-all duration-300 ${
+                            isRegistrationOpen 
+                            ? 'bg-gradient-to-r from-emerald-50 to-teal-50 border-emerald-100 text-emerald-800' 
+                            : 'bg-gradient-to-r from-slate-50 to-gray-50 border-slate-200 text-slate-600'
+                        }`}>
+                            <div className="flex items-center gap-4">
+                                <div className={`p-3 rounded-full ${isRegistrationOpen ? 'bg-emerald-100 text-emerald-600' : 'bg-slate-200 text-slate-500'}`}>
+                                    <Clock size={24} />
+                                </div>
+                                <div>
+                                    <h3 className="font-bold text-lg">{isRegistrationOpen ? '目前開放報名中' : '目前非報名時間'}</h3>
+                                    <p className="text-sm opacity-80 mt-0.5 font-medium">
+                                        {settings.start && settings.end ? `${settings.start.replace('T', ' ')} ~ ${settings.end.replace('T', ' ')}` : '尚未設定時間'}
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+
+                        {user && !isAdmin && (
+                            <section className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden hover:shadow-md transition-shadow">
+                                <div className="px-8 py-5 border-b border-slate-100 bg-indigo-50/50 flex flex-col sm:flex-row justify-between items-center gap-4">
+                                    <div className="flex items-center gap-4">
+                                        <h2 className="text-xl font-bold text-indigo-900 flex items-center gap-2">
+                                            <List size={22} className="text-indigo-600" /> 我的報名清單
+                                        </h2>
+                                        <span className="text-sm text-indigo-600 bg-indigo-50 border border-indigo-100 px-3 py-1 rounded-full font-medium">
+                                            {formattedTime} 更新 • 共 {userRegistrations.length} 筆
+                                        </span>
+                                        <button onClick={handleManualRefresh} className="text-indigo-300 hover:text-indigo-600 transition p-1 rounded-full hover:bg-indigo-50" title="重新整理">
+                                            <RefreshCw size={18} />
+                                        </button>
+                                    </div>
+                                </div>
+                                <div className="overflow-x-auto">
+                                    <table className="w-full text-left border-collapse">
+                                        <thead className="bg-slate-50 text-slate-500 uppercase text-xs font-bold">
+                                            <tr>
+                                                <th className="px-6 py-4 tracking-wider">社團名稱</th>
+                                                <th className="px-6 py-4 tracking-wider">學生班級</th>
+                                                <th className="px-6 py-4 tracking-wider">學生姓名</th>
+                                                <th className="px-6 py-4 tracking-wider">狀態</th>
+                                                <th className="px-6 py-4 text-right tracking-wider">操作</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-slate-100 bg-white">
+                                            {userRegistrations.length === 0 ? (
+                                                <tr>
+                                                    <td colSpan="5" className="px-6 py-12 text-center text-slate-400 italic">
+                                                        目前沒有報名任何社團
+                                                    </td>
+                                                </tr>
+                                            ) : (
+                                                userRegistrations.map(reg => (
+                                                    <tr key={reg.id} className="hover:bg-indigo-50/30 transition-colors group">
+                                                        <td className="px-6 py-4 font-bold text-slate-800">{reg.clubName}</td>
+                                                        <td className="px-6 py-4 text-slate-600">{reg.studentClass}</td>
+                                                        <td className="px-6 py-4 text-slate-600 font-medium">{reg.studentName}</td>
+                                                        <td className="px-6 py-4">
+                                                            <span className={`px-3 py-1 rounded-full text-xs font-bold border shadow-sm ${
+                                                                reg.status === 'main' 
+                                                                ? 'bg-emerald-50 text-emerald-700 border-emerald-100' 
+                                                                : 'bg-amber-50 text-amber-700 border-amber-100'
+                                                            }`}>
+                                                                {getStatusLabel(reg)}
+                                                            </span>
+                                                        </td>
+                                                        <td className="px-6 py-4 text-right">
+                                                            <button 
+                                                                onClick={() => handleCancelRegistration(reg.id)}
+                                                                className="text-slate-300 hover:text-rose-600 hover:bg-rose-50 p-2 rounded-lg transition"
+                                                                title="取消報名"
+                                                            >
+                                                                <XCircle size={20} />
+                                                            </button>
+                                                        </td>
+                                                    </tr>
+                                                ))
+                                            )}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </section>
+                        )}
+
+                        <section className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden hover:shadow-md transition-shadow">
+                            <div className="px-8 py-6 border-b border-slate-100 flex justify-between items-center">
+                                <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2"><Users size={22} className="text-indigo-500"/> 所有社團列表</h2>
+                            </div>
+                            <div className="overflow-x-auto">
+                                <table className="w-full text-left border-collapse">
+                                    <thead className="bg-slate-50 text-slate-500 uppercase text-xs font-bold">
+                                        <tr>
+                                            <th className="px-6 py-4 tracking-wider">社團名稱</th>
+                                            <th className="px-6 py-4 tracking-wider">老師</th>
+                                            <th className="px-6 py-4 tracking-wider">時間</th>
+                                            <th className="px-6 py-4 tracking-wider">地點</th>
+                                            <th className="px-6 py-4 tracking-wider">年級</th>
+                                            <th className="px-6 py-4 tracking-wider">費用 (學+材)</th>
+                                            <th className="px-6 py-4 text-center tracking-wider">名額 (正/備)</th>
+                                            <th className="px-6 py-4 text-center tracking-wider">操作</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-slate-100 bg-white">
+                                        {clubs.length === 0 ? (
+                                            <tr><td colSpan="8" className="px-6 py-16 text-center text-slate-400 text-lg">目前尚無社團資料，請等待管理員新增。</td></tr>
+                                        ) : (
+                                            clubs.map((club) => {
+                                                const { mainCount, reserveCount } = getClubStats(club.id);
+                                                const isFull = mainCount >= club.quota && reserveCount >= club.reserveQuota;
+                                                return (
+                                                    <tr key={club.id} className="hover:bg-slate-50 transition-colors group">
+                                                        <td className="px-6 py-5">
+                                                            <div className="font-bold text-indigo-900 text-base">{club.name}</div>
+                                                        </td>
+                                                        <td className="px-6 py-5 text-sm text-slate-600 font-medium">{club.teacher}</td>
+                                                        <td className="px-6 py-5 text-sm text-slate-600">
+                                                            <div className="flex items-center gap-1.5"><Clock size={14} className="text-slate-400"/>{club.time}</div>
+                                                        </td>
+                                                        <td className="px-6 py-5 text-sm text-slate-600">
+                                                           <div className="flex items-center gap-1.5"><MapPin size={14} className="text-slate-400"/>{club.location}</div>
+                                                        </td>
+                                                        <td className="px-6 py-5 text-sm text-slate-600">
+                                                            <span className="bg-slate-100 text-slate-600 px-2.5 py-1 rounded-md text-xs font-bold border border-slate-200">{club.grade}</span>
+                                                        </td>
+                                                        <td className="px-6 py-5 text-sm text-slate-700 font-medium">
+                                                            ${club.fee} <span className="text-slate-400 text-xs">+ ${club.materialFee}</span>
+                                                        </td>
+                                                        <td className="px-6 py-5 text-center">
+                                                            <div className="flex flex-col items-center gap-1 text-sm">
+                                                                <div className="flex items-center gap-1">
+                                                                    <span className={`font-bold ${mainCount >= club.quota ? 'text-rose-500' : 'text-emerald-600'}`}>{mainCount}/{club.quota}</span>
+                                                                    <span className="text-xs text-slate-400">正</span>
+                                                                </div>
+                                                                <div className="flex items-center gap-1">
+                                                                    <span className={`font-bold ${reserveCount >= club.reserveQuota ? 'text-rose-500' : 'text-amber-500'}`}>{reserveCount}/{club.reserveQuota}</span>
+                                                                    <span className="text-xs text-slate-400">備</span>
+                                                                </div>
+                                                            </div>
+                                                        </td>
+                                                        <td className="px-6 py-5 text-center">
+                                                            <div className="flex items-center justify-center gap-2">
+                                                                <button onClick={() => setViewingClub(club)} className="p-2 bg-white border border-slate-200 text-slate-500 rounded-lg hover:bg-slate-50 hover:text-indigo-600 hover:border-indigo-200 transition shadow-sm" title="查看詳情"><Info size={18} /></button>
+
+                                                                {isAdmin ? (
+                                                                    <>
+                                                                    <button onClick={() => { setEditingClub(club); setClubModalOpen(true); }} className="p-2 bg-white border border-slate-200 text-indigo-600 rounded-lg hover:bg-indigo-50 hover:border-indigo-200 transition shadow-sm"><Edit size={18}/></button>
+                                                                    <button onClick={() => handleDeleteClub(club.id)} className="p-2 bg-white border border-slate-200 text-rose-600 rounded-lg hover:bg-rose-50 hover:border-rose-200 transition shadow-sm"><Trash2 size={18}/></button>
+                                                                    </>
+                                                                ) : (
+                                                                    <button 
+                                                                        onClick={() => handleRegisterClick(club)} 
+                                                                        disabled={!isRegistrationOpen || isFull} 
+                                                                        className={`px-5 py-2 rounded-lg text-sm font-bold transition shadow-sm active:scale-[0.98] ${
+                                                                            !isRegistrationOpen 
+                                                                            ? 'bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200' 
+                                                                            : isFull 
+                                                                                ? 'bg-slate-200 text-slate-500 cursor-not-allowed border border-slate-300' 
+                                                                                : 'bg-indigo-600 text-white hover:bg-indigo-700 hover:shadow-md shadow-indigo-200'
+                                                                        }`}
+                                                                    >
+                                                                        {isFull ? '額滿' : '報名'}
+                                                                    </button>
+                                                                )}
+                                                            </div>
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })
+                                        )}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </section>
+                    </main>
+                    <footer className="bg-white border-t border-slate-200 mt-16 py-10 text-center text-slate-500 text-sm font-medium">
+                        <p>© {new Date().getFullYear()} 新上國小課後社團報名系統</p>
+                        <p className="text-xs mt-1 text-slate-400">System Designed for Demo</p>
+                    </footer>
+                </div>
+            );
+        }
+
+        const root = createRoot(document.getElementById('root'));
+        root.render(<App />);
+        document.body.style.display = 'block';
+    </script>
+</body>
+</html>
